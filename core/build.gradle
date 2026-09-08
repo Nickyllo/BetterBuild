@@ -1,0 +1,23 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'Version- and loader-independent brain: blueprints, compiler, validator, planner, agent.'
+
+dependencies {
+    // The only two runtime dependencies the core has. Neither knows about Minecraft.
+    api "com.anthropic:anthropic-java:${anthropicSdkVersion}"
+    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Runs the whole pipeline and prints the building as ASCII — the fastest way to see
+// whether a change to the compiler broke the geometry.
+tasks.register('demo', JavaExec) {
+    group = 'betterbuild'
+    description = 'Compile, validate and plan a house, then print it.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.nickyllo.betterbuild.core.DemoRun'
+}

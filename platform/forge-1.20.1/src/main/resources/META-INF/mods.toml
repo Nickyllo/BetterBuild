@@ -1,0 +1,26 @@
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+
+[[mods]]
+modId = "betterbuild"
+version = "0.1.0"
+displayName = "BetterBuild"
+authors = "Nickyllo"
+description = '''
+An AI architect that lives in your world, walks to the site and builds it block by block.
+'''
+
+[[dependencies.betterbuild]]
+modId = "forge"
+mandatory = true
+versionRange = "[47,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.betterbuild]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.20.1,1.21)"
+ordering = "NONE"
+side = "BOTH"
