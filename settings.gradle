@@ -17,6 +17,9 @@ include 'core'
 // contains nothing but glue. They need the game's toolchain to build, so they are
 // opt-in: ./gradlew build works on a bare checkout, and
 // ./gradlew -Pplatforms=true build pulls in the loaders.
+// fabric-26.2 no aparece aqui a proposito: se compila con compilar-fabric-26.2.sh,
+// con javac directo contra el jar del juego. Minecraft 26.2 ya no viene ofuscado,
+// asi que no hacen falta Loom ni mappings, y tarda segundos en vez de minutos.
 if (providers.gradleProperty('platforms').getOrElse('false') == 'true') {
     include 'platform:fabric-1.21.1'
     include 'platform:neoforge-1.21.1'
