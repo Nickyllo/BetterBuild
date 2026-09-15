@@ -26,6 +26,11 @@ public final class FakeWorld implements WorldView {
 
     @Override public boolean isAir(Vec3i pos) { return !isSolid(pos); }
 
+    @Override public String blockIdAt(Vec3i pos) {
+        String id = placed.get(pos);
+        return id != null ? id : "minecraft:air";
+    }
+
     @Override public boolean isLiquid(Vec3i pos) { return false; }
 
     @Override public int surfaceY(int x, int z) { return groundY; }

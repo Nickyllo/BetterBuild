@@ -8,6 +8,7 @@ import dev.nickyllo.betterbuild.core.blueprint.BlockRef;
 import dev.nickyllo.betterbuild.core.geom.Box;
 import dev.nickyllo.betterbuild.core.geom.Direction;
 import dev.nickyllo.betterbuild.core.geom.Vec3i;
+import dev.nickyllo.betterbuild.core.learn.StyleProfile;
 import dev.nickyllo.betterbuild.core.platform.SiteSurvey;
 
 /**
@@ -40,9 +41,15 @@ public final class ProceduralDesignProvider implements DesignProvider {
                     + MIN_SIDE + " by " + MIN_SIDE + " to fit a building.");
         }
 
-        int storeys = request.prompt().toLowerCase().contains("two") ? 2 : 1;
-        int wallHeight = 4 * storeys + 1;
-        int pitch = 1;
+        // A learned style wins over the built-in defaults: the whole point of
+        // teaching him is that what he saw beats what he was born knowing.
+        StyleProfile learned = request.style().orElse(null);
+
+        int storeys = learned != null
+                ? learned.storeys()
+                : (request.prompt().toLowerCase().contains("two") ? 2 : 1);
+        int wallHeight = learned != null ? learned.wallHeight() : 4 * storeys + 1;
+        int pitch = learned != null && learned.hasGableRoof() ? learned.roofPitch() : 1;
 
         // The roof overhangs by one, so the walls are set in by one: the finished
         // building — eaves included — stays inside the plot the player marked.
@@ -51,10 +58,10 @@ public final class ProceduralDesignProvider implements DesignProvider {
         int bx1 = width - 1 - inset, bz1 = depth - 1 - inset;
 
         Box footprint = new Box(new Vec3i(bx0, 1, bz0), new Vec3i(bx1, wallHeight, bz1));
-        Palette palette = paletteFor(survey);
+        Palette palette = learned != null ? learned.palette() : paletteFor(survey);
 
         Blueprint.Builder b = Blueprint.named(titleFor(request.prompt()))
-                .size(width, wallHeight + Math.max(width, depth) / 2 + 3, depth)
+                .size(width, wallHeight + Math.max(width, depth) / 2 + 4, depth)
                 .palette(palette)
                 // Plinth: one solid course so the building never floats on sloped ground.
                 .add(new Element.SolidFill(
@@ -79,7 +86,11 @@ public final class ProceduralDesignProvider implements DesignProvider {
             for (Direction face : Direction.HORIZONTAL) {
                 int span = (face == Direction.NORTH || face == Direction.SOUTH)
                         ? innerWidth : innerDepth;
-                for (int at = 2; at < span - 2; at += 3) {
+                // Glaze as densely as whatever he learned from, else every 3 blocks.
+                int every = learned != null && learned.windowRatio() > 0
+                        ? Math.max(2, (int) Math.round(1.0 / Math.max(0.08, learned.windowRatio())))
+                        : 3;
+                for (int at = 2; at < span - 2; at += every) {
                     boolean clashesWithDoor = face == Direction.SOUTH && storey == 0
                             && Math.abs(at - innerWidth / 2) <= 1;
                     if (!clashesWithDoor) {
@@ -91,9 +102,16 @@ public final class ProceduralDesignProvider implements DesignProvider {
         }
 
         Element.Axis ridge = innerWidth >= innerDepth ? Element.Axis.X : Element.Axis.Z;
-        b.add(new Element.GableRoof(
-                new Box(new Vec3i(bx0, wallHeight + 1, bz0), new Vec3i(bx1, wallHeight + 1, bz1)),
-                ridge, pitch, OVERHANG, PaletteSlot.ROOF));
+        int overhang = learned != null ? Math.max(0, Math.min(OVERHANG, learned.overhang())) : OVERHANG;
+        if (learned != null && !learned.hasGableRoof()) {
+            b.add(new Element.FlatRoof(
+                    new Box(new Vec3i(bx0, wallHeight + 1, bz0), new Vec3i(bx1, wallHeight + 1, bz1)),
+                    overhang, PaletteSlot.ROOF));
+        } else {
+            b.add(new Element.GableRoof(
+                    new Box(new Vec3i(bx0, wallHeight + 1, bz0), new Vec3i(bx1, wallHeight + 1, bz1)),
+                    ridge, pitch, overhang, PaletteSlot.ROOF));
+        }
 
         // Lantern hung against an inside wall — a light floating in the middle of the
         // room would be flagged by the validator, and rightly so.

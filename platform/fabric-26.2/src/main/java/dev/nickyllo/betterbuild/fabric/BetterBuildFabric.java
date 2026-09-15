@@ -13,6 +13,8 @@ import dev.nickyllo.betterbuild.core.design.DesignRequest;
 import dev.nickyllo.betterbuild.core.design.ProceduralDesignProvider;
 import dev.nickyllo.betterbuild.core.geom.Box;
 import dev.nickyllo.betterbuild.core.geom.Vec3i;
+import dev.nickyllo.betterbuild.core.learn.StyleLearner;
+import dev.nickyllo.betterbuild.core.learn.StyleProfile;
 import dev.nickyllo.betterbuild.core.platform.SiteSurvey;
 import dev.nickyllo.betterbuild.core.platform.WorldView;
 import dev.nickyllo.betterbuild.core.validate.StructureValidator;
@@ -21,6 +23,7 @@ import dev.nickyllo.betterbuild.core.validate.ValidationIssue;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
@@ -35,6 +38,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -59,8 +63,18 @@ public final class BetterBuildFabric implements ModInitializer {
     private static final StructureValidator VALIDATOR = new StructureValidator();
     private static final BuildPlanner PLANNER = new BuildPlanner();
 
+    /** How far around the player /bb aprender looks for a building to study. */
+    private static final int LEARN_RADIUS = 20;
+    private static final int LEARN_BELOW = 6;
+    private static final int LEARN_ABOVE = 24;
+
+    private static final StyleLearner LEARNER = new StyleLearner();
+    private static StyleStore styles;
+
     private static final Map<UUID, BuildJob> RUNNING = new HashMap<>();
     private static final Map<UUID, WorldView.Snapshot> LAST_BUILD = new HashMap<>();
+    /** Style each player is currently building in; absent means "read the biome". */
+    private static final Map<UUID, String> ACTIVE_STYLE = new HashMap<>();
 
     @Override
     public void onInitialize() {
@@ -80,7 +94,21 @@ public final class BetterBuildFabric implements ModInitializer {
                                                                 IntegerArgumentType.getInteger(ctx, "fondo"),
                                                                 StringArgumentType.getString(ctx, "descripcion")))))))
                         .then(Commands.literal("parar").executes(ctx -> stop(ctx.getSource())))
-                        .then(Commands.literal("deshacer").executes(ctx -> undo(ctx.getSource())))));
+                        .then(Commands.literal("deshacer").executes(ctx -> undo(ctx.getSource())))
+                        .then(Commands.literal("aprender")
+                                .then(Commands.argument("nombre", StringArgumentType.greedyString())
+                                        .executes(ctx -> learn(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "nombre")))))
+                        .then(Commands.literal("estilos").executes(ctx -> listStyles(ctx.getSource())))
+                        .then(Commands.literal("usar")
+                                .then(Commands.argument("nombre", StringArgumentType.greedyString())
+                                        .executes(ctx -> useStyle(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "nombre")))))
+                        .then(Commands.literal("natural").executes(ctx -> clearStyle(ctx.getSource())))
+                        .then(Commands.literal("olvidar")
+                                .then(Commands.argument("nombre", StringArgumentType.greedyString())
+                                        .executes(ctx -> forget(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "nombre")))))));
 
         // Advances every running build a few blocks per tick.
         ServerTickEvents.END_SERVER_TICK.register(server -> {
@@ -95,7 +123,11 @@ public final class BetterBuildFabric implements ModInitializer {
             }
         });
 
-        LOG.info("[{}] Listo. Usa /bb construir. Disenos: {}", ID, LOCAL.name());
+        styles = new StyleStore(
+                FabricLoader.getInstance().getConfigDir().resolve("betterbuild-estilos.json"));
+
+        LOG.info("[{}] Listo. /bb construir para levantar algo, /bb aprender para ensenarle. "
+                + "Estilos aprendidos: {}", ID, styles.names().size());
     }
 
     private static int build(CommandSourceStack source, int width, int depth, String prompt) {
@@ -123,9 +155,14 @@ public final class BetterBuildFabric implements ModInitializer {
         player.sendSystemMessage(Component.literal(
                 "El Arquitecto mira el terreno: " + survey.describe() + "."));
 
+        Optional<StyleProfile> style = styleFor(player);
+        DesignRequest request = style
+                .map(sp -> DesignRequest.inStyle(prompt, survey, sp))
+                .orElseGet(() -> DesignRequest.fresh(prompt, survey));
+
         Blueprint blueprint;
         try {
-            blueprint = LOCAL.design(DesignRequest.fresh(prompt, survey));
+            blueprint = LOCAL.design(request);
         } catch (DesignProvider.DesignException e) {
             source.sendFailure(Component.literal("No puedo construir ahi: " + e.getMessage()));
             return 0;
@@ -150,7 +187,8 @@ public final class BetterBuildFabric implements ModInitializer {
         WorldView.Snapshot undo = world.snapshot(plot);
 
         player.sendSystemMessage(Component.literal(
-                "Empiezo: " + blueprint.name() + " — " + structure.solidCount() + " bloques."));
+                "Empiezo: " + blueprint.name() + " — " + structure.solidCount() + " bloques"
+                        + style.map(sp -> ", al estilo de " + sp.source()).orElse("") + "."));
 
         BuildJob job = new BuildJob(plan, world, level, player, corner, undo);
         RUNNING.put(player.getUUID(), job);
@@ -189,6 +227,101 @@ public final class BetterBuildFabric implements ModInitializer {
         snapshot.restore();
         player.sendSystemMessage(Component.literal("Revertido. El terreno vuelve a como estaba."));
         return 1;
+    }
+
+    /**
+     * Studies whatever is standing around the player and keeps the lesson.
+     *
+     * <p>This is the teaching the mod is built on: you put something up by hand, he
+     * looks at it, and from then on what he builds carries your materials, your
+     * storey heights and your roof.
+     */
+    private static int learn(CommandSourceStack source, String name) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            return 0;
+        }
+        ServerLevel level = (ServerLevel) player.level();
+        LevelWorldView world = new LevelWorldView(level);
+
+        Vec3i centre = new Vec3i(player.getBlockX(), player.getBlockY(), player.getBlockZ());
+        Box region = new Box(
+                centre.add(-LEARN_RADIUS, -LEARN_BELOW, -LEARN_RADIUS),
+                centre.add(LEARN_RADIUS, LEARN_ABOVE, LEARN_RADIUS));
+
+        Optional<StyleProfile> learned = LEARNER.learn(world, region, name.trim());
+        if (learned.isEmpty()) {
+            source.sendFailure(Component.literal(
+                    "No veo aqui nada de lo que aprender. Ponte junto a la construccion."));
+            return 0;
+        }
+
+        StyleProfile profile = learned.get();
+        styles.put(profile);
+        ACTIVE_STYLE.put(player.getUUID(), profile.source().toLowerCase());
+
+        player.sendSystemMessage(Component.literal("Entendido: " + profile.describe() + "."));
+        player.sendSystemMessage(Component.literal(
+                "Guardado como \"" + profile.source() + "\". A partir de ahora construyo asi. "
+                        + "/bb natural para volver a mi estilo."));
+        return 1;
+    }
+
+    private static int listStyles(CommandSourceStack source) {
+        if (styles.names().isEmpty()) {
+            source.sendSystemMessage(Component.literal(
+                    "Todavia no me has ensenado nada. Ponte junto a algo que hayas "
+                            + "construido y usa /bb aprender <nombre>."));
+            return 0;
+        }
+        source.sendSystemMessage(Component.literal("Se construir al estilo de:"));
+        for (String name : styles.names()) {
+            styles.get(name).ifPresent(sp ->
+                    source.sendSystemMessage(Component.literal("  " + sp.source() + " — " + sp.describe())));
+        }
+        return 1;
+    }
+
+    private static int useStyle(CommandSourceStack source, String name) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            return 0;
+        }
+        Optional<StyleProfile> style = styles.get(name.trim());
+        if (style.isEmpty()) {
+            source.sendFailure(Component.literal("No conozco ese estilo. /bb estilos para verlos."));
+            return 0;
+        }
+        ACTIVE_STYLE.put(player.getUUID(), name.trim().toLowerCase());
+        player.sendSystemMessage(Component.literal(
+                "De acuerdo, construyo al estilo de " + style.get().source() + "."));
+        return 1;
+    }
+
+    private static int clearStyle(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            return 0;
+        }
+        ACTIVE_STYLE.remove(player.getUUID());
+        player.sendSystemMessage(Component.literal(
+                "Vuelvo a mi criterio: elegire los materiales segun el bioma."));
+        return 1;
+    }
+
+    private static int forget(CommandSourceStack source, String name) {
+        if (!styles.forget(name.trim())) {
+            source.sendFailure(Component.literal("No conozco ese estilo."));
+            return 0;
+        }
+        source.sendSystemMessage(Component.literal("Olvidado: " + name.trim()));
+        return 1;
+    }
+
+    /** The style this player is building in, if any is active and still known. */
+    private static Optional<StyleProfile> styleFor(ServerPlayer player) {
+        String active = ACTIVE_STYLE.get(player.getUUID());
+        return active == null ? Optional.empty() : styles.get(active);
     }
 
     /** The block position a few steps ahead of where the player is looking. */

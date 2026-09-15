@@ -15,6 +15,14 @@ public interface WorldView {
 
     boolean isSolid(Vec3i pos);
 
+    /**
+     * Namespaced id of the block at this position, or {@code minecraft:air}.
+     *
+     * <p>Needed so the Architect can look at a building someone else made and work
+     * out what it is made of — reading the world, not just writing to it.
+     */
+    String blockIdAt(Vec3i pos);
+
     boolean isAir(Vec3i pos);
 
     /** True for water and lava, which change how a plot must be prepared. */

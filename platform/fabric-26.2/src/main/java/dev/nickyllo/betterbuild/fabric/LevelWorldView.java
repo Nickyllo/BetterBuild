@@ -53,6 +53,11 @@ public final class LevelWorldView implements WorldView {
     }
 
     @Override
+    public String blockIdAt(Vec3i p) {
+        return BuiltInRegistries.BLOCK.getKey(level.getBlockState(at(p)).getBlock()).toString();
+    }
+
+    @Override
     public boolean isLiquid(Vec3i p) {
         return !level.getFluidState(at(p)).isEmpty();
     }
