@@ -57,9 +57,25 @@ NOMBRE="betterbuild-0.1.0.jar"
 "$JAR" --create --file "$RAIZ/build/$NOMBRE" -C "$SALIDA" .
 
 if [[ -d "$INSTANCIA/mods" ]]; then
-    echo ">> Instalando en $INSTANCIA/mods"
-    cp "$RAIZ/build/$NOMBRE" "$INSTANCIA/mods/$NOMBRE"
-    ls -la "$INSTANCIA/mods/$NOMBRE"
+    ACTIVO="$INSTANCIA/mods/$NOMBRE"
+    DESACTIVADO="$ACTIVO.disabled"
+    # Respeta lo que decidiste en el launcher: si el mod esta desactivado, se
+    # actualiza la copia desactivada y sigue desactivado. Solo se instala activo
+    # cuando no habia ninguna copia.
+    if [[ -f "$ACTIVO" ]]; then
+        echo ">> Actualizando (activo) en $INSTANCIA/mods"
+        cp "$RAIZ/build/$NOMBRE" "$ACTIVO"
+        ls -la "$ACTIVO"
+    elif [[ -f "$DESACTIVADO" ]]; then
+        echo ">> Actualizando la copia DESACTIVADA; sigue desactivado."
+        echo "   Para activarlo, activalo en Prism o quita el .disabled."
+        cp "$RAIZ/build/$NOMBRE" "$DESACTIVADO"
+        ls -la "$DESACTIVADO"
+    else
+        echo ">> Instalando en $INSTANCIA/mods"
+        cp "$RAIZ/build/$NOMBRE" "$ACTIVO"
+        ls -la "$ACTIVO"
+    fi
 else
     echo ">> Instancia no encontrada; el jar queda en $RAIZ/build/$NOMBRE"
 fi

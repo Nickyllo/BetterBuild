@@ -58,7 +58,7 @@ public record BlueprintDto(
      */
     public record ElementDto(
             @JsonPropertyDescription("One of: SOLID_FILL, FLOOR_SLAB, PERIMETER_WALL, "
-                    + "PILLAR, CORNER_POSTS, GABLE_ROOF, FLAT_ROOF, OPENING, MARKER")
+                    + "PILLAR, CORNER_POSTS, GABLE_ROOF, FLAT_ROOF, OPENING, MARKER, MODULE")
             String kind,
 
             @JsonPropertyDescription("Region the element occupies. For GABLE_ROOF and "
@@ -103,6 +103,13 @@ public record BlueprintDto(
             int pitch,
 
             @JsonPropertyDescription("Roofs only: how far the eaves extend past the walls, usually 1")
-            int overhang) {
+            int overhang,
+
+            @JsonPropertyDescription("MODULE only: exact name of one of the modules you were offered. "
+                    + "It is placed with its minimum corner at area x1,y1,z1.")
+            String module,
+
+            @JsonPropertyDescription("MODULE only: quarter turns clockwise seen from above, 0 to 3")
+            int rotation) {
     }
 }

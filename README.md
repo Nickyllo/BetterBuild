@@ -33,6 +33,23 @@ lo que le dices → PLANO declarativo (muro, tejado, arco, ventana…)
 La IA diseña y conversa. El mod construye. Por eso *«sube el tejado»* es instantáneo
 y gratis, y por eso nada llega al mundo sin pasar por el validador.
 
+## Schematics y Litematica
+
+El mod lee la carpeta `schematics/` de la instancia, que es la de Litematica. Entiende
+`.litematic`, `.schem` (WorldEdit, Sponge v2 y v3) y `.nbt` (estructuras vanilla).
+
+| Comando | Qué hace |
+|---|---|
+| `/bb schematics` | Lista lo que hay en la carpeta y lo que no se pudo leer |
+| `/bb estudiar <archivo>` | Aprende el estilo de un schematic |
+| `/bb colocar <archivo>` | El Arquitecto lo levanta bloque a bloque delante de ti |
+| `/bb exportar <nombre>` | Guarda lo último que construyó como `.litematic` |
+| `/bb exportar <nombre> <desde> <hasta>` | Guarda cualquier zona, coordenadas como en `/fill` |
+
+Con la conexión a Claude, cada encargo lleva además hasta tres schematics de la
+biblioteca como referencia (alzado y planta dibujados en texto), y el modelo puede
+colocar cualquiera de ellos como módulo del edificio.
+
 ## Compilar y probar
 
 El núcleo es Java puro: **no hace falta Minecraft para trabajar en él.**

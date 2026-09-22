@@ -8,6 +8,8 @@ import dev.nickyllo.betterbuild.core.blueprint.PaletteSlot;
 import dev.nickyllo.betterbuild.core.geom.Box;
 import dev.nickyllo.betterbuild.core.geom.Direction;
 import dev.nickyllo.betterbuild.core.geom.Vec3i;
+import dev.nickyllo.betterbuild.core.schematic.Schematic;
+import dev.nickyllo.betterbuild.core.schematic.SchematicLibrary;
 
 import java.util.Locale;
 
@@ -22,6 +24,17 @@ import java.util.Locale;
  */
 public final class BlueprintMapper {
 
+    private final SchematicLibrary library;
+
+    public BlueprintMapper() {
+        this(SchematicLibrary.empty());
+    }
+
+    /** With a library, MODULE elements can name the schematics in it. */
+    public BlueprintMapper(SchematicLibrary library) {
+        this.library = library;
+    }
+
     public Blueprint toBlueprint(BlueprintDto dto, Box plot) throws DesignProvider.DesignException {
         if (dto == null || dto.elements() == null || dto.elements().isEmpty()) {
             throw new DesignProvider.DesignException("the design came back empty");
@@ -33,8 +46,16 @@ public final class BlueprintMapper {
                 .size(plot.sizeX(), plot.sizeY(), plot.sizeZ())
                 .palette(toPalette(dto.palette()));
 
+        int kept = 0;
         for (BlueprintDto.ElementDto e : dto.elements()) {
-            builder.add(toElement(e, localPlot));
+            Element element = toElement(e, localPlot);
+            if (element != null) {
+                builder.add(element);
+                kept++;
+            }
+        }
+        if (kept == 0) {
+            throw new DesignProvider.DesignException("none of the design's elements could be used");
         }
         return builder.build();
     }
@@ -94,8 +115,36 @@ public final class BlueprintMapper {
                     Math.max(0, e.sill()),
                     openingKind(e.openingKind()));
             case "MARKER" -> new Element.Marker(area.min(), slot(e.slot(), PaletteSlot.LIGHT));
+            case "MODULE" -> module(e, area.min(), plot);
             default -> throw new DesignProvider.DesignException("unknown element kind: " + kind);
         };
+    }
+
+    /**
+     * Resolves a module by name and pulls it inside the plot. A name the library does
+     * not have, or a module bigger than the plot, drops that one element rather than
+     * the whole design: a missing porch is a smaller loss than no house.
+     */
+    private Element module(BlueprintDto.ElementDto e, Vec3i at, Box plot) {
+        if (e.module() == null) {
+            return null;
+        }
+        Schematic s = library.get(e.module()).orElse(null);
+        if (s == null) {
+            return null;
+        }
+        int rotation = Math.floorMod(e.rotation(), 4);
+        boolean turned = rotation % 2 == 1;
+        int sx = turned ? s.sizeZ() : s.sizeX();
+        int sz = turned ? s.sizeX() : s.sizeZ();
+        if (sx > plot.sizeX() || s.sizeY() > plot.sizeY() || sz > plot.sizeZ()) {
+            return null;
+        }
+        Vec3i fitted = new Vec3i(
+                Math.min(at.x(), plot.max().x() - sx + 1),
+                Math.min(at.y(), plot.max().y() - s.sizeY() + 1),
+                Math.min(at.z(), plot.max().z() - sz + 1));
+        return new Element.Module(s, fitted, rotation);
     }
 
     private Box toBox(BlueprintDto.BoxDto b) throws DesignProvider.DesignException {

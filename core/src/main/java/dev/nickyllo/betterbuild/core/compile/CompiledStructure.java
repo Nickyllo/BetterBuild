@@ -53,6 +53,12 @@ public final class CompiledStructure {
         return ref != null && !ref.isAir();
     }
 
+    /** Walkable once built: nothing there, cleared air, or a door or gate. */
+    public boolean isPassableAt(Vec3i pos) {
+        BlockRef ref = blocks.get(pos);
+        return ref == null || ref.isPassable();
+    }
+
     /** Tight bounding box of everything the structure occupies. */
     public Box extent() {
         if (blocks.isEmpty()) {

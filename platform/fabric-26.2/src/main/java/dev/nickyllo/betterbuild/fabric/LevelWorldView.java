@@ -13,10 +13,13 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Adapts a Minecraft 26.2 level to the core's {@link WorldView}.
@@ -55,6 +58,21 @@ public final class LevelWorldView implements WorldView {
     @Override
     public String blockIdAt(Vec3i p) {
         return BuiltInRegistries.BLOCK.getKey(level.getBlockState(at(p)).getBlock()).toString();
+    }
+
+    /** The block with its full state, so an export keeps stairs facing the right way. */
+    @Override
+    public BlockRef blockAt(Vec3i p) {
+        BlockState state = level.getBlockState(at(p));
+        Map<String, String> props = new TreeMap<>();
+        for (Property<?> prop : state.getProperties()) {
+            props.put(prop.getName(), valueName(state, prop));
+        }
+        return new BlockRef(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString(), List.of(), props);
+    }
+
+    private static <T extends Comparable<T>> String valueName(BlockState state, Property<T> prop) {
+        return prop.getName(state.getValue(prop));
     }
 
     @Override
@@ -118,10 +136,30 @@ public final class LevelWorldView implements WorldView {
             for (String candidate : ref.resolutionChain()) {
                 Identifier id = Identifier.tryParse(candidate);
                 if (id != null && BuiltInRegistries.BLOCK.containsKey(id)) {
-                    return BuiltInRegistries.BLOCK.getValue(id).defaultBlockState();
+                    return withProperties(BuiltInRegistries.BLOCK.getValue(id), ref.properties());
                 }
             }
             return null;
+        }
+
+        /**
+         * Applies each property the block knows; the rest are skipped. A fallback block
+         * may lack a property the original had, and that must never stop it placing.
+         */
+        private static BlockState withProperties(Block block, Map<String, String> props) {
+            BlockState state = block.defaultBlockState();
+            for (var e : props.entrySet()) {
+                Property<?> prop = block.getStateDefinition().getProperty(e.getKey());
+                if (prop != null) {
+                    state = withValue(state, prop, e.getValue());
+                }
+            }
+            return state;
+        }
+
+        private static <T extends Comparable<T>> BlockState withValue(BlockState state, Property<T> prop,
+                                                                      String value) {
+            return prop.getValue(value).map(v -> state.setValue(prop, v)).orElse(state);
         }
     }
 }

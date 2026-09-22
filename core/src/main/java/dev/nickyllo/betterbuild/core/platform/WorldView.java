@@ -23,6 +23,14 @@ public interface WorldView {
      */
     String blockIdAt(Vec3i pos);
 
+    /**
+     * The full block at this position, properties included. Platforms that can read
+     * block states override this; the default knows only the id.
+     */
+    default BlockRef blockAt(Vec3i pos) {
+        return BlockRef.of(blockIdAt(pos));
+    }
+
     boolean isAir(Vec3i pos);
 
     /** True for water and lava, which change how a plot must be prepared. */

@@ -102,9 +102,24 @@ class StyleLearnerTest {
                 Box.between(origin, origin.add(13, 25, 13)), "casa alta").orElseThrow();
 
         assertEquals(11, style.footprintWidth(), "footprint should match what was built");
-        assertTrue(style.wallHeight() >= 8 && style.wallHeight() <= 10,
-                "wall height should be read back roughly right, got " + style.wallHeight());
+        assertEquals(9, style.wallHeight(), "walls built 9 high must be read back as 9");
+        assertEquals(2, style.storeys(), "9-high walls are two storeys");
         assertTrue(style.hasGableRoof(), "a pitched roof should not be read as flat");
+    }
+
+    @Test
+    void readsWallHeightExactlyWhateverTheBuildingsHeight() {
+        // The bug this guards: walls were measured against a line at two thirds of the
+        // total height, so a 5-high house came back as 8 and a 6-high one as 8 too.
+        for (int walls : new int[]{4, 5, 6, 9, 13}) {
+            var world = new FakeWorld(64, "minecraft:plains");
+            var origin = new Vec3i(0, 64, 0);
+            place(world, compiler.compile(handMade(deepslatePalette(), walls, 1)), origin);
+            StyleProfile style = learner.learn(world,
+                    Box.between(origin, origin.add(13, walls + 12, 13)), "h" + walls).orElseThrow();
+            assertEquals(walls, style.wallHeight(), "walls " + walls + " high");
+            assertTrue(style.hasGableRoof());
+        }
     }
 
     @Test

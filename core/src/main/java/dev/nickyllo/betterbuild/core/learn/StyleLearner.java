@@ -114,10 +114,17 @@ public final class StyleLearner {
         set(palette, PaletteSlot.LIGHT, lightId);
 
         Box footprint = footprintOf(solids.keySet(), groundY);
-        int wallHeight = wallHeightOf(solids, groundY, roofFrom, roof);
-        int pitch = pitchOf(solids, roofFrom, roof);
-        int overhang = overhangOf(solids, roofFrom, roof, footprint);
-        int storeys = Math.max(1, Math.round(wallHeight / 4f));
+        boolean distinctRoof = !roof.equals(wall);
+        int wallHeight = distinctRoof
+                ? wallHeightOf(solids, groundY, roof, footprint)
+                : fallbackWallHeight(solids, groundY, roofFrom, roof);
+        // With a distinct roof material, every block of it counts — eaves included —
+        // rather than only those above an arbitrary line.
+        int roofBase = distinctRoof ? groundY + 1 : roofFrom;
+        int pitch = pitchOf(solids, roofBase, roof);
+        int overhang = overhangOf(solids, roofBase, roof, footprint);
+        // Storeys of four blocks plus a course, the proportions the generator builds.
+        int storeys = Math.max(1, Math.round((wallHeight - 1) / 4f));
         int perimeter = 2 * (footprint.sizeX() + footprint.sizeZ());
         double windowRatio = perimeter == 0 ? 0 : (double) windows / perimeter;
 
@@ -126,8 +133,35 @@ public final class StyleLearner {
                 windowRatio, footprint.sizeX(), footprint.sizeZ(), all));
     }
 
-    /** Height from the ground to where roof material starts. */
-    private int wallHeightOf(Map<Vec3i, String> solids, int groundY, int roofFrom, String roof) {
+    /**
+     * Height of the walls above the ground course: one below the lowest roofing that
+     * sits over the footprint itself.
+     *
+     * <p>Looking only inside the footprint is what keeps the eaves out of it — they
+     * hang past the walls and lower than the roof proper, and counting them would
+     * make every overhanging roof read one course too low.
+     */
+    private int wallHeightOf(Map<Vec3i, String> solids, int groundY, String roof, Box footprint) {
+        int lowest = Integer.MAX_VALUE;
+        for (var e : solids.entrySet()) {
+            Vec3i p = e.getKey();
+            boolean overFootprint = p.x() >= footprint.min().x() && p.x() <= footprint.max().x()
+                    && p.z() >= footprint.min().z() && p.z() <= footprint.max().z();
+            if (e.getValue().equals(roof) && overFootprint && p.y() > groundY) {
+                lowest = Math.min(lowest, p.y());
+            }
+        }
+        if (lowest == Integer.MAX_VALUE) {
+            return solids.keySet().stream().mapToInt(Vec3i::y).max().orElse(groundY) - groundY;
+        }
+        return lowest - 1 - groundY;
+    }
+
+    /**
+     * When roof and walls are the same block there is no material boundary to find,
+     * so fall back to where the upper part of the building begins.
+     */
+    private int fallbackWallHeight(Map<Vec3i, String> solids, int groundY, int roofFrom, String roof) {
         int lowestRoof = Integer.MAX_VALUE;
         for (var e : solids.entrySet()) {
             if (e.getValue().equals(roof) && e.getKey().y() >= roofFrom) {

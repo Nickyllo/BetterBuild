@@ -13,8 +13,14 @@ import dev.nickyllo.betterbuild.core.design.DesignRequest;
 import dev.nickyllo.betterbuild.core.design.ProceduralDesignProvider;
 import dev.nickyllo.betterbuild.core.geom.Box;
 import dev.nickyllo.betterbuild.core.geom.Vec3i;
+import dev.nickyllo.betterbuild.core.blueprint.Element;
 import dev.nickyllo.betterbuild.core.learn.StyleLearner;
 import dev.nickyllo.betterbuild.core.learn.StyleProfile;
+import dev.nickyllo.betterbuild.core.schematic.Schematic;
+import dev.nickyllo.betterbuild.core.schematic.SchematicCapture;
+import dev.nickyllo.betterbuild.core.schematic.SchematicFiles;
+import dev.nickyllo.betterbuild.core.schematic.SchematicLibrary;
+import dev.nickyllo.betterbuild.core.schematic.SchematicWorldView;
 import dev.nickyllo.betterbuild.core.platform.SiteSurvey;
 import dev.nickyllo.betterbuild.core.platform.WorldView;
 import dev.nickyllo.betterbuild.core.validate.StructureValidator;
@@ -24,8 +30,12 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.SharedConstants;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -33,6 +43,9 @@ import net.minecraft.server.level.ServerPlayer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -71,6 +84,19 @@ public final class BetterBuildFabric implements ModInitializer {
     private static final StyleLearner LEARNER = new StyleLearner();
     private static StyleStore styles;
 
+    /** Beyond this the Architect declines to raise a schematic by hand: that is Litematica's job. */
+    private static final long MAX_PLACE_VOLUME = 200_000;
+    /** Largest area /bb exportar will copy. */
+    private static final long MAX_EXPORT_VOLUME = 1_000_000;
+
+    /**
+     * Litematica's own folder. Sharing it is the integration: whatever you save or
+     * download for Litematica he can study and build, and whatever he exports shows up
+     * in Litematica's load menu.
+     */
+    private static Path schematicsDir;
+    private static SchematicLibrary library;
+
     private static final Map<UUID, BuildJob> RUNNING = new HashMap<>();
     private static final Map<UUID, WorldView.Snapshot> LAST_BUILD = new HashMap<>();
     /** Style each player is currently building in; absent means "read the biome". */
@@ -108,7 +134,28 @@ public final class BetterBuildFabric implements ModInitializer {
                         .then(Commands.literal("olvidar")
                                 .then(Commands.argument("nombre", StringArgumentType.greedyString())
                                         .executes(ctx -> forget(ctx.getSource(),
-                                                StringArgumentType.getString(ctx, "nombre")))))));
+                                                StringArgumentType.getString(ctx, "nombre")))))
+                        .then(Commands.literal("schematics").executes(ctx -> listSchematics(ctx.getSource())))
+                        .then(Commands.literal("estudiar")
+                                .then(Commands.argument("archivo", StringArgumentType.greedyString())
+                                        .suggests((ctx, b) -> SharedSuggestionProvider.suggest(library().names(), b))
+                                        .executes(ctx -> study(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "archivo")))))
+                        .then(Commands.literal("colocar")
+                                .then(Commands.argument("archivo", StringArgumentType.greedyString())
+                                        .suggests((ctx, b) -> SharedSuggestionProvider.suggest(library().names(), b))
+                                        .executes(ctx -> place(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "archivo")))))
+                        .then(Commands.literal("exportar")
+                                .then(Commands.argument("nombre", StringArgumentType.word())
+                                        .executes(ctx -> exportLastBuild(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "nombre")))
+                                        .then(Commands.argument("desde", BlockPosArgument.blockPos())
+                                                .then(Commands.argument("hasta", BlockPosArgument.blockPos())
+                                                        .executes(ctx -> exportArea(ctx.getSource(),
+                                                                StringArgumentType.getString(ctx, "nombre"),
+                                                                BlockPosArgument.getLoadedBlockPos(ctx, "desde"),
+                                                                BlockPosArgument.getLoadedBlockPos(ctx, "hasta")))))))));
 
         // Advances every running build a few blocks per tick.
         ServerTickEvents.END_SERVER_TICK.register(server -> {
@@ -125,6 +172,7 @@ public final class BetterBuildFabric implements ModInitializer {
 
         styles = new StyleStore(
                 FabricLoader.getInstance().getConfigDir().resolve("betterbuild-estilos.json"));
+        schematicsDir = FabricLoader.getInstance().getGameDir().resolve("schematics");
 
         LOG.info("[{}] Listo. /bb construir para levantar algo, /bb aprender para ensenarle. "
                 + "Estilos aprendidos: {}", ID, styles.names().size());
@@ -315,6 +363,185 @@ public final class BetterBuildFabric implements ModInitializer {
             return 0;
         }
         source.sendSystemMessage(Component.literal("Olvidado: " + name.trim()));
+        return 1;
+    }
+
+    // ------------------------------------------------------------------ schematics
+
+    /** Loaded on first use, so a big folder never slows the game's start. */
+    private static SchematicLibrary library() {
+        if (library == null) {
+            library = SchematicLibrary.load(schematicsDir);
+        }
+        return library;
+    }
+
+    /** By name; a file saved a moment ago in Litematica is picked up with one reload. */
+    private static Optional<Schematic> findSchematic(String name) {
+        Optional<Schematic> found = library().get(name.trim());
+        if (found.isEmpty()) {
+            library = SchematicLibrary.load(schematicsDir);
+            found = library.get(name.trim());
+        }
+        return found;
+    }
+
+    private static int listSchematics(CommandSourceStack source) {
+        library = SchematicLibrary.load(schematicsDir);
+        if (library.isEmpty() && library.failures().isEmpty()) {
+            source.sendSystemMessage(Component.literal("No hay schematics en " + schematicsDir
+                    + ". Guarda alguno con Litematica o WorldEdit, o descargalo ahi."));
+            return 0;
+        }
+        source.sendSystemMessage(Component.literal(library.all().size() + " schematics en la carpeta de Litematica:"));
+        library.all().stream().limit(15).forEach(sc -> source.sendSystemMessage(Component.literal(
+                "  " + sc.name() + " — " + sc.sizeX() + "x" + sc.sizeY() + "x" + sc.sizeZ()
+                        + ", " + sc.blockCount() + " bloques")));
+        if (library.all().size() > 15) {
+            source.sendSystemMessage(Component.literal("  ...y " + (library.all().size() - 15) + " mas."));
+        }
+        if (!library.failures().isEmpty()) {
+            source.sendSystemMessage(Component.literal(library.failures().size() + " no se pudieron leer:"));
+            library.failures().stream().limit(3).forEach(f -> source.sendSystemMessage(
+                    Component.literal("  " + f.file() + ": " + f.reason())));
+        }
+        return 1;
+    }
+
+    /**
+     * Learns a style from a schematic file, exactly as /bb aprender does from the world.
+     * Download a medieval village for Litematica and he builds medieval.
+     */
+    private static int study(CommandSourceStack source, String name) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            return 0;
+        }
+        Optional<Schematic> schematic = findSchematic(name);
+        if (schematic.isEmpty()) {
+            source.sendFailure(Component.literal("No encuentro ese schematic. /bb schematics para verlos."));
+            return 0;
+        }
+        Schematic s = schematic.get();
+        Optional<StyleProfile> learned = LEARNER.learn(new SchematicWorldView(s), s.box(), s.name());
+        if (learned.isEmpty()) {
+            source.sendFailure(Component.literal("En ese schematic no veo un edificio del que aprender."));
+            return 0;
+        }
+        StyleProfile profile = learned.get();
+        styles.put(profile);
+        ACTIVE_STYLE.put(player.getUUID(), profile.source().toLowerCase());
+        player.sendSystemMessage(Component.literal("Estudiado " + s.name() + ": " + profile.describe() + "."));
+        player.sendSystemMessage(Component.literal("A partir de ahora construyo asi. /bb natural para volver a mi estilo."));
+        return 1;
+    }
+
+    /** The Architect raises a schematic block by block in front of you, undoable like any build. */
+    private static int place(CommandSourceStack source, String name) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            return 0;
+        }
+        if (RUNNING.containsKey(player.getUUID())) {
+            source.sendFailure(Component.literal("Ya estoy construyendo. Usa /bb parar primero."));
+            return 0;
+        }
+        Optional<Schematic> schematic = findSchematic(name);
+        if (schematic.isEmpty()) {
+            source.sendFailure(Component.literal("No encuentro ese schematic. /bb schematics para verlos."));
+            return 0;
+        }
+        Schematic s = schematic.get();
+        long volume = (long) s.sizeX() * s.sizeY() * s.sizeZ();
+        if (volume > MAX_PLACE_VOLUME) {
+            source.sendFailure(Component.literal("Es demasiado grande para levantarla a mano ("
+                    + volume + " bloques de volumen). Colocala con Litematica."));
+            return 0;
+        }
+
+        ServerLevel level = (ServerLevel) player.level();
+        LevelWorldView world = new LevelWorldView(level);
+        Vec3i feet = new Vec3i(player.getBlockX(), player.getBlockY(), player.getBlockZ());
+        Vec3i ahead = forwardOf(player, feet, PLOT_DISTANCE + Math.max(s.sizeX(), s.sizeZ()) / 2);
+        // On top of the ground: schematics carry their own foundations.
+        int groundY = world.surfaceY(ahead.x(), ahead.z()) + 1;
+        Vec3i corner = new Vec3i(ahead.x() - s.sizeX() / 2, groundY, ahead.z() - s.sizeZ() / 2);
+
+        Blueprint blueprint = Blueprint.named(s.name()).size(s.sizeX(), s.sizeY(), s.sizeZ())
+                .add(new Element.Module(s, Vec3i.ZERO, 0)).build();
+        BuildPlan plan = PLANNER.plan(COMPILER.compile(blueprint));
+        Box region = new Box(corner, corner.add(s.sizeX() - 1, s.sizeY() - 1, s.sizeZ() - 1));
+        WorldView.Snapshot undo = world.snapshot(region);
+
+        player.sendSystemMessage(Component.literal("Levanto " + s.name() + ": " + plan.blocksRequired()
+                + " bloques. /bb parar o /bb deshacer cuando quieras."));
+        RUNNING.put(player.getUUID(), new BuildJob(plan, world, level, player, corner, undo));
+        LAST_BUILD.put(player.getUUID(), undo);
+        return 1;
+    }
+
+    /** Saves the last thing he built for you as a .litematic, ready in Litematica's load menu. */
+    private static int exportLastBuild(CommandSourceStack source, String name) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            return 0;
+        }
+        WorldView.Snapshot last = LAST_BUILD.get(player.getUUID());
+        if (last == null) {
+            source.sendFailure(Component.literal("No he construido nada que exportar. "
+                    + "Para exportar otra zona: /bb exportar <nombre> <desde> <hasta>."));
+            return 0;
+        }
+        return export(source, player, name, last.region());
+    }
+
+    /** Saves any area, coordinates written like /fill (with ~ for relative). */
+    private static int exportArea(CommandSourceStack source, String name, BlockPos from, BlockPos to) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            return 0;
+        }
+        Box region = Box.between(new Vec3i(from.getX(), from.getY(), from.getZ()),
+                new Vec3i(to.getX(), to.getY(), to.getZ()));
+        if (region.volume() > MAX_EXPORT_VOLUME) {
+            source.sendFailure(Component.literal("La zona es demasiado grande (" + region.volume()
+                    + " bloques). Maximo " + MAX_EXPORT_VOLUME + "."));
+            return 0;
+        }
+        return export(source, player, name, region);
+    }
+
+    private static int export(CommandSourceStack source, ServerPlayer player, String name, Box region) {
+        // The name comes from chat and becomes a file name: letters, digits, - and _ only.
+        String safe = name.replaceAll("[^A-Za-z0-9_-]", "_");
+        if (safe.isBlank() || safe.length() > 64) {
+            source.sendFailure(Component.literal("Nombre no valido. Usa letras, numeros, - y _."));
+            return 0;
+        }
+        Path file = schematicsDir.resolve(safe + ".litematic");
+        if (Files.exists(file)) {
+            source.sendFailure(Component.literal("Ya existe " + file.getFileName() + ". Elige otro nombre."));
+            return 0;
+        }
+        LevelWorldView world = new LevelWorldView((ServerLevel) player.level());
+        Optional<Schematic> captured = SchematicCapture.fromWorld(world, region, safe);
+        if (captured.isEmpty()) {
+            source.sendFailure(Component.literal("En esa zona no hay nada que guardar."));
+            return 0;
+        }
+        try {
+            int dataVersion = SharedConstants.getCurrentVersion().dataVersion().version();
+            SchematicFiles.writeLitematic(captured.get(), file, player.getName().getString(),
+                    "Exportado con BetterBuild", dataVersion);
+        } catch (IOException | RuntimeException e) {
+            source.sendFailure(Component.literal("No pude guardarlo: " + e.getMessage()));
+            return 0;
+        }
+        library = null; // Pick the new file up next time.
+        Schematic s = captured.get();
+        player.sendSystemMessage(Component.literal("Guardado en schematics/" + file.getFileName() + " ("
+                + s.sizeX() + "x" + s.sizeY() + "x" + s.sizeZ() + ", " + s.blockCount()
+                + " bloques). Abrelo en Litematica desde \"Cargar schematics\"."));
         return 1;
     }
 

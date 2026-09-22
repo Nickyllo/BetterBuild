@@ -97,6 +97,10 @@ public final class BlueprintCompiler {
 
         } else if (element instanceof Element.Marker e) {
             out.put(e.pos(), palette.get(e.slot()));
+
+        } else if (element instanceof Element.Module e) {
+            e.schematic().rotated(e.rotation())
+                    .forEachBlock((pos, ref) -> out.put(e.at().add(pos), ref));
         }
     }
 
@@ -187,10 +191,14 @@ public final class BlueprintCompiler {
 
                 if (e.kind() == Element.OpeningKind.WINDOW) {
                     out.put(start, palette.get(PaletteSlot.WINDOW));
-                } else if (e.kind() == Element.OpeningKind.DOOR && h == 0) {
-                    // Only the lower half is emitted; the platform layer places the
-                    // matching upper half, exactly as the game does for a player.
-                    out.put(start, palette.get(PaletteSlot.DOOR));
+                } else if (e.kind() == Element.OpeningKind.DOOR && h < 2) {
+                    // Both halves, explicitly. Setting a door block directly does not
+                    // grow its upper half the way placing one by hand does, so a door
+                    // emitted as one block would stand in the world as half a door.
+                    // Facing inward matches a player placing it from outside.
+                    out.put(start, palette.get(PaletteSlot.DOOR)
+                            .with("facing", inward.name().toLowerCase(java.util.Locale.ROOT))
+                            .with("half", h == 0 ? "lower" : "upper"));
                 }
             }
         }

@@ -3,6 +3,7 @@ package dev.nickyllo.betterbuild.core.blueprint;
 import dev.nickyllo.betterbuild.core.geom.Box;
 import dev.nickyllo.betterbuild.core.geom.Direction;
 import dev.nickyllo.betterbuild.core.geom.Vec3i;
+import dev.nickyllo.betterbuild.core.schematic.Schematic;
 
 /**
  * One architectural primitive. This is the entire vocabulary the language model is
@@ -93,6 +94,29 @@ public sealed interface Element {
             if (offset < 0 || sill < 0) throw new IllegalArgumentException("offset and sill must be >= 0");
         }
         @Override public Box bounds() { return building; }
+    }
+
+    /**
+     * A hand-built piece from a schematic — a porch, a tower top, a fountain —
+     * placed with its minimum corner at {@code at} and turned {@code rotation}
+     * quarter turns clockwise.
+     *
+     * <p>This is where primitives run out and people take over: detail a rule could
+     * never produce comes in as a module, block states and all. Air in the module is
+     * not placed, so a module never carves into what it is attached to.
+     */
+    record Module(Schematic schematic, Vec3i at, int rotation) implements Element {
+        public Module {
+            rotation = Math.floorMod(rotation, 4);
+        }
+
+        @Override
+        public Box bounds() {
+            boolean turned = rotation % 2 == 1;
+            int sx = turned ? schematic.sizeZ() : schematic.sizeX();
+            int sz = turned ? schematic.sizeX() : schematic.sizeZ();
+            return new Box(at, at.add(sx - 1, schematic.sizeY() - 1, sz - 1));
+        }
     }
 
     /** Single decorative or functional block — lanterns, chimneys' tops, signage. */

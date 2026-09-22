@@ -6,9 +6,15 @@ import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.StructuredMessageCreateParams;
 
 import dev.nickyllo.betterbuild.core.blueprint.Blueprint;
+import dev.nickyllo.betterbuild.core.blueprint.PaletteSlot;
+import dev.nickyllo.betterbuild.core.learn.StyleProfile;
 import dev.nickyllo.betterbuild.core.platform.SiteSurvey;
+import dev.nickyllo.betterbuild.core.schematic.Schematic;
+import dev.nickyllo.betterbuild.core.schematic.SchematicDigest;
+import dev.nickyllo.betterbuild.core.schematic.SchematicLibrary;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -24,12 +30,27 @@ public final class ClaudeDesignProvider implements DesignProvider {
 
     private static final String MODEL = "claude-opus-5";
     private static final long MAX_TOKENS = 16_000L;
+    /** Reference buildings shown per request; each costs roughly a thousand tokens. */
+    private static final int REFERENCES = 3;
+    /** Modules listed by name; beyond this the list is noise the model has to wade through. */
+    private static final int MODULES_LISTED = 30;
 
     private final AnthropicClient client;
-    private final BlueprintMapper mapper = new BlueprintMapper();
+    private final SchematicLibrary library;
+    private final BlueprintMapper mapper;
 
     public ClaudeDesignProvider(AnthropicClient client) {
+        this(client, SchematicLibrary.empty());
+    }
+
+    /**
+     * With a library, the model sees human-built references for each request and can
+     * place any schematic in it as a MODULE.
+     */
+    public ClaudeDesignProvider(AnthropicClient client, SchematicLibrary library) {
         this.client = client;
+        this.library = library;
+        this.mapper = new BlueprintMapper(library);
     }
 
     /**
@@ -40,12 +61,16 @@ public final class ClaudeDesignProvider implements DesignProvider {
      *                short on purpose: he is walking to the site while this runs.
      */
     public static Optional<ClaudeDesignProvider> fromEnvironment(Duration timeout) {
+        return fromEnvironment(timeout, SchematicLibrary.empty());
+    }
+
+    public static Optional<ClaudeDesignProvider> fromEnvironment(Duration timeout, SchematicLibrary library) {
         try {
             AnthropicClient client = AnthropicOkHttpClient.builder()
                     .fromEnv()
                     .timeout(timeout)
                     .build();
-            return Optional.of(new ClaudeDesignProvider(client));
+            return Optional.of(new ClaudeDesignProvider(client, library));
         } catch (RuntimeException e) {
             return Optional.empty();
         }
@@ -65,7 +90,7 @@ public final class ClaudeDesignProvider implements DesignProvider {
                 .maxTokens(MAX_TOKENS)
                 .system(systemPrompt())
                 .outputConfig(BlueprintDto.class)
-                .addUserMessage(userPrompt(request, survey))
+                .addUserMessage(userPrompt(request, library))
                 .build();
 
         try {
@@ -110,10 +135,24 @@ public final class ClaudeDesignProvider implements DesignProvider {
 
             Aim for buildings a player would be pleased to find: right proportions, \
             visible structure, windows where a room would want light.
+
+            You may be shown reference buildings that people built by hand, drawn as a \
+            front elevation and a ground plan. They are the standard to aim for. Notice \
+            what makes them good — proportions, where timber shows, how the roof \
+            overhangs, the rhythm of the windows — and bring that into your own design. \
+            Do not copy them.
+
+            You may also be offered modules: hand-built pieces such as porches or tower \
+            tops. Place one with kind MODULE, its exact name, its minimum corner in area \
+            x1,y1,z1 and a rotation of 0 to 3 quarter turns clockwise. Use them for \
+            detail the primitives cannot express, attached to the building, never \
+            floating. If no modules are offered, do not use MODULE.
             """;
     }
 
-    private String userPrompt(DesignRequest request, SiteSurvey survey) {
+    /** Package-private so tests can check what the model is actually told. */
+    static String userPrompt(DesignRequest request, SchematicLibrary library) {
+        SiteSurvey survey = request.survey();
         StringBuilder sb = new StringBuilder();
         sb.append("Plot: ").append(survey.plot().sizeX()).append(" wide, ")
                 .append(survey.plot().sizeY()).append(" tall, ")
@@ -125,6 +164,24 @@ public final class ClaudeDesignProvider implements DesignProvider {
             sb.append("Part of the plot is water.\n");
         }
 
+        request.style().ifPresent(style -> appendStyle(sb, style));
+
+        List<Schematic> references = library.relevantTo(request.prompt(), REFERENCES);
+        if (!references.isEmpty()) {
+            sb.append("\nReference buildings made by people. Legend: ")
+                    .append(SchematicDigest.LEGEND).append("\n\n");
+            for (Schematic ref : references) {
+                sb.append(SchematicDigest.of(ref)).append('\n');
+            }
+        }
+
+        if (!library.isEmpty()) {
+            sb.append("\nModules you can place with MODULE, by exact name:\n");
+            library.all().stream().limit(MODULES_LISTED).forEach(m -> sb.append("- ").append(m.name())
+                    .append(": ").append(m.sizeX()).append(" wide, ").append(m.sizeY()).append(" tall, ")
+                    .append(m.sizeZ()).append(" deep\n"));
+        }
+
         if (request.isRefinement()) {
             sb.append("\nYou already designed \"")
                     .append(request.previous().orElseThrow().name())
@@ -134,5 +191,25 @@ public final class ClaudeDesignProvider implements DesignProvider {
             sb.append("\nThe player asked for: ").append(request.prompt());
         }
         return sb.toString();
+    }
+
+    /** What the player taught him, stated as instructions rather than left implicit. */
+    private static void appendStyle(StringBuilder sb, StyleProfile style) {
+        sb.append("\nThe player taught you a style from a building they made (\"")
+                .append(style.source()).append("\"). Follow it:\n");
+        sb.append("- materials: ");
+        for (PaletteSlot slot : PaletteSlot.values()) {
+            sb.append(slot.name().toLowerCase(java.util.Locale.ROOT)).append('=')
+                    .append(style.palette().get(slot).id()).append(' ');
+        }
+        sb.append("\n- walls ").append(style.wallHeight()).append(" high, ")
+                .append(style.storeys()).append(style.storeys() == 1 ? " storey" : " storeys").append('\n');
+        sb.append("- roof: ").append(style.hasGableRoof()
+                ? "gable, rising " + style.roofPitch() + " per step, eaves out " + style.overhang()
+                : "flat").append('\n');
+        if (style.windowRatio() > 0) {
+            sb.append("- glazing: about ").append(Math.max(1, Math.round(style.windowRatio() * 10)))
+                    .append(" glass blocks per 10 blocks of wall\n");
+        }
     }
 }

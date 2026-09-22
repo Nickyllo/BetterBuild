@@ -112,14 +112,16 @@ public final class StructureValidator {
                 escaped = true;
                 break;
             }
+            // Doors count as a way through: a house whose only entrance is a door is
+            // the most normal house there is, not a sealed one.
             for (Direction d : Direction.HORIZONTAL) {
                 Vec3i n = p.offset(d, 1);
-                if (!s.isSolidAt(n) && seen.add(n)) {
+                if (s.isPassableAt(n) && seen.add(n)) {
                     queue.add(n);
                 }
             }
             Vec3i up = p.up(1);
-            if (!s.isSolidAt(up) && seen.add(up)) queue.add(up);
+            if (s.isPassableAt(up) && seen.add(up)) queue.add(up);
         }
 
         if (!escaped) {

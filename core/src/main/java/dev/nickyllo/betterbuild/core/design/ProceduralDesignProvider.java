@@ -47,7 +47,7 @@ public final class ProceduralDesignProvider implements DesignProvider {
 
         int storeys = learned != null
                 ? learned.storeys()
-                : (request.prompt().toLowerCase().contains("two") ? 2 : 1);
+                : (asksForTwoStoreys(request.prompt()) ? 2 : 1);
         int wallHeight = learned != null ? learned.wallHeight() : 4 * storeys + 1;
         int pitch = learned != null && learned.hasGableRoof() ? learned.roofPitch() : 1;
 
@@ -146,6 +146,12 @@ public final class ProceduralDesignProvider implements DesignProvider {
                     .build();
         }
         return Palette.defaultOak();
+    }
+
+    /** "two", "dos" or "2 plantas" — players type in whatever language they play in. */
+    private static boolean asksForTwoStoreys(String prompt) {
+        String p = prompt == null ? "" : prompt.toLowerCase(java.util.Locale.ROOT);
+        return p.contains("two") || p.contains("dos ") || p.contains("2 plantas") || p.contains("2 pisos");
     }
 
     private String titleFor(String prompt) {
