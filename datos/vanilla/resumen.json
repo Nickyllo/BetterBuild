@@ -1,0 +1,29 @@
+{
+ "jar": "26.2.jar",
+ "estructuras": 1212,
+ "fallos": [],
+ "por_grupo": {
+  "trial_chambers": 191,
+  "bastion": 167,
+  "village/plains": 104,
+  "village/savanna": 98,
+  "village/taiga": 92,
+  "village/snowy": 89,
+  "trail_ruins": 84,
+  "village/desert": 76,
+  "woodland_mansion": 73,
+  "ancient_city": 58,
+  "underwater_ruin": 48,
+  "village/common": 21,
+  "end_city": 20,
+  "shipwreck": 20,
+  "fossil": 16,
+  "nether_fossils": 14,
+  "ruined_portal": 13,
+  "pillager_outpost": 11,
+  "spring": 10,
+  "igloo": 3,
+  "village/decays": 3,
+  "empty.nbt": 1
+ }
+}
